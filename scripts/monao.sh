@@ -102,7 +102,10 @@ usage() {
   material-update <id> [--data J|...]  更新素材        PUT  /api/inspiration/{id}
 
 选题：
-  topic-create [--data J|--file F]     从素材生成选题  POST /open-api/topic-cards
+  topic-generate --content '...' [--topic ...] [--reference ...] [--employee ID]
+                 [--require ...] [--score N] [--decision accept]
+                                       ★推荐★ 建选题并「保证派活生成」（专家模式直存,绕过 AI revise 门槛）
+  topic-create [--data J|--file F]     原始透传 POST /open-api/topic-cards（默认 AI 模式,可能被门槛卡住,见下）
   topic-list [--status S] [--page N]   选题列表
   topic-get <id>                       选题详情
   topic-status <id>                    选题生文状态（轮询用）
@@ -172,6 +175,27 @@ print(json.dumps({"unusedCount":len(keep),"records":keep},ensure_ascii=False,ind
   material-update) id="$1"; shift; _req PUT "/api/inspiration/${id}" "$(_read_body "$@")" ;;
 
   # ── 选题 ──
+  # topic-generate：专家模式直存（score+decision=accept），后端走 createByExpertMode →
+  # 直接 topicCardService.assign 派活，绕过异步 worker「decision==accept 才生成」的门槛。
+  # 默认 AI 模式（topic-create 不带 score/decision）在 XML 提示词员工下 decision 恒为 revise，
+  # 会被 worker 跳过 → 选题卡永久停在 CREATED、无报错。本命令是「保证出文章」的可靠入口。
+  topic-generate)
+    content="$(_opt --content "$@")"; topic="$(_opt --topic "$@")"
+    reference="$(_opt --reference "$@")"; employee="$(_opt --employee "$@")"
+    require="$(_opt --require "$@")"; score="$(_opt --score "$@")"; decision="$(_opt --decision "$@")"
+    [ -z "$content" ] && { echo "❌ topic-generate 需要 --content '<选题主体/素材正文>'" >&2; exit 1; }
+    body="$(MONAO_C="$content" MONAO_T="$topic" MONAO_R="$reference" MONAO_E="$employee" \
+            MONAO_U="$require" MONAO_S="${score:-80}" MONAO_D="${decision:-accept}" python3 -c '
+import os, json
+b = {"contentText": os.environ["MONAO_C"], "needAiOptimize": False,
+     "autoAssign": True, "score": int(os.environ["MONAO_S"]),
+     "decision": os.environ["MONAO_D"]}
+for env, key, cast in (("MONAO_T","topic",str),("MONAO_R","referenceMaterial",str),
+                       ("MONAO_U","userRequire",str),("MONAO_E","employeeId",int)):
+    v = os.environ.get(env, "")
+    if v: b[key] = cast(v)
+print(json.dumps(b, ensure_ascii=False))')"
+    _req POST "/open-api/topic-cards" "$body" ;;
   topic-create) _req POST "/open-api/topic-cards" "$(_read_body "$@")" ;;
   topic-list)
     status="$(_opt --status "$@")"; page="$(_opt --page "$@")"
